@@ -1,7 +1,7 @@
 GO111MODULE = on
 
 .ONESHELL:
-SHELL = /bin/bash
+SHELL = /usr/bin/env bash
 
 all: configure build #default make target
 
