@@ -1,7 +1,9 @@
 GO111MODULE = on
 
+DEST_PATH ?= internal/msgs
+
 .ONESHELL:
-SHELL = /usr/bin/env bash
+SHELL = bash
 
 all: configure build #default make target
 
@@ -23,19 +25,17 @@ test-verbose:
 	go test -v -count=1 ./...
 
 generate:
-	dest_path=internal/msgs
-
-	rm -rf "$$dest_path/"*
+	rm -rf "$(DEST_PATH)/"*
 	go run ./cmd/rclgo-gen generate \
 	    --root-path /usr \
 	    --root-path /opt/ros/${ROS_DISTRO} \
-	    --dest-path "$$dest_path" \
-		--message-module-prefix "github.com/tiiuae/rclgo/$$dest_path" \
+	    --dest-path "$(DEST_PATH)" \
+		--message-module-prefix "github.com/tiiuae/rclgo/$(DEST_PATH)" \
 		--license-header-path ./license-header.txt \
 		--include-go-package-deps ./... \
 		--cgo-flags-path "" \
 		|| exit 1
-	rm "$$dest_path/msgs.gen.go" || exit 1
+	rm "$(DEST_PATH)/msgs.gen.go" || exit 1
 	go run ./cmd/rclgo-gen generate-rclgo \
 		--root-path /usr \
 		--root-path /opt/ros/${ROS_DISTRO} \
@@ -43,3 +43,14 @@ generate:
 
 lint:
 	golangci-lint run ./...
+
+container-build-image:
+	podman build --tag ros-rclgo:jazzy .
+
+container-generate:
+	podman run  --rm \
+				--interactive \
+				--tty \
+				--volume $(PWD):/opt/rclgo:ro \
+				--volume $(PWD)/internal/msgs:/opt/rclgo-msgs:rw \
+				sh -c 'cd /opt/rclgo && make generate -e DEST_PATH=/opt/rclgo-msgs'
