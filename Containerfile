@@ -5,6 +5,7 @@ RUN apt update \
     && apt install -y --no-install-recommends \
         golang \
         make \
+        ros-jazzy-example-interfaces \
         ros-jazzy-test-msgs \
     && apt clean \
     && rm -rf /var/lib/apt/lists/*

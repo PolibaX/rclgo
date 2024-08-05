@@ -30,7 +30,7 @@ generate:
 	    --root-path /usr \
 	    --root-path /opt/ros/${ROS_DISTRO} \
 	    --dest-path "$(DEST_PATH)" \
-		--message-module-prefix "github.com/tiiuae/rclgo/$(DEST_PATH)" \
+		--message-module-prefix "github.com/PolibaX/rclgo/$(DEST_PATH)" \
 		--license-header-path ./license-header.txt \
 		--include-go-package-deps ./... \
 		--cgo-flags-path "" \
@@ -51,6 +51,6 @@ container-generate:
 	podman run  --rm \
 				--interactive \
 				--tty \
-				--volume $(PWD):/opt/rclgo:ro \
-				--volume $(PWD)/internal/msgs:/opt/rclgo-msgs:rw \
-				sh -c 'cd /opt/rclgo && make generate -e DEST_PATH=/opt/rclgo-msgs'
+				--volume $(PWD):/opt/rclgo:rw \
+                ros-rclgo:jazzy \
+				sh -c 'cd /opt/rclgo && make generate'
