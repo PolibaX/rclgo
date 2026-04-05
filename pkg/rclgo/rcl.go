@@ -10,6 +10,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 package rclgo
 
 /*
+#cgo LDFLAGS: -lrcl_yaml_param_parser
 #include <stdlib.h>
 #include <string.h>
 
@@ -21,7 +22,32 @@ package rclgo
 #include <rcl/timer.h>
 #include <rcl/expand_topic_name.h>
 #include <rcl_action/wait.h>
+#include <rcl_yaml_param_parser/parser.h>
 #include <rmw/rmw.h>
+
+// Cast enums on the C side to avoid cgo typedef mismatches in this package.
+static inline void rclgo_qos_set_local(
+  rmw_qos_profile_t* dst,
+  uint32_t history,
+  size_t depth,
+  uint32_t reliability,
+  uint32_t durability,
+  uint64_t deadline,
+  uint64_t lifespan,
+  uint32_t liveliness,
+  uint64_t liveliness_lease_duration,
+  _Bool avoid_ns
+) {
+  dst->history = (rmw_qos_history_policy_t)history;
+  dst->depth = depth;
+  dst->reliability = (rmw_qos_reliability_policy_t)reliability;
+  dst->durability = (rmw_qos_durability_policy_t)durability;
+  dst->deadline.nsec = deadline;
+  dst->lifespan.nsec = lifespan;
+  dst->liveliness = (rmw_qos_liveliness_policy_t)liveliness;
+  dst->liveliness_lease_duration.nsec = liveliness_lease_duration;
+  dst->avoid_ros_namespace_conventions = avoid_ns;
+}
 */
 import "C"
 
@@ -35,8 +61,45 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/PolibaX/rclgo/pkg/rclgo/types"
+	"github.com/merlindrones/rclgo/pkg/rclgo/qos"
+	"github.com/merlindrones/rclgo/pkg/rclgo/types"
 )
+
+// pkg/rclgo/rcl.go
+
+// pkg/rclgo/rcl.go
+// ...
+// qosToC writes a qos.Profile into a rmw_qos_profile_t.
+// qosToC writes a qos.Profile into a rmw_qos_profile_t.
+func qosToC(p qos.Profile, dst *C.rmw_qos_profile_t) {
+	C.rclgo_qos_set_local(
+		dst,
+		C.uint32_t(p.History),
+		C.size_t(p.Depth),
+		C.uint32_t(p.Reliability),
+		C.uint32_t(p.Durability),
+		C.uint64_t(p.Deadline),
+		C.uint64_t(p.Lifespan),
+		C.uint32_t(p.Liveliness),
+		C.uint64_t(p.LivelinessLeaseDuration),
+		C.bool(p.AvoidROSNamespaceConventions),
+	)
+}
+
+// qosFromC creates a qos.Profile from a rmw_qos_profile_t.
+func qosFromC(src *C.rmw_qos_profile_t) qos.Profile {
+	return qos.Profile{
+		History:                      qos.HistoryPolicy(src.history),
+		Depth:                        int(src.depth),
+		Reliability:                  qos.ReliabilityPolicy(src.reliability),
+		Durability:                   qos.DurabilityPolicy(src.durability),
+		Deadline:                     time.Duration(src.deadline.nsec),
+		Lifespan:                     time.Duration(src.lifespan.nsec),
+		Liveliness:                   qos.LivelinessPolicy(src.liveliness),
+		LivelinessLeaseDuration:      time.Duration(src.liveliness_lease_duration.nsec),
+		AvoidROSNamespaceConventions: bool(src.avoid_ros_namespace_conventions),
+	}
+}
 
 type MessageInfo struct {
 	SourceTimestamp   time.Time
@@ -113,6 +176,28 @@ func (a *Args) argc() C.int {
 func (a *Args) argv() **C.char {
 	s := (*reflect.SliceHeader)(unsafe.Pointer(&a.unparsed))
 	return (**C.char)(unsafe.Pointer(s.Data))
+}
+
+// Parsed returns a pointer to the parsed RCL arguments structure.
+// This is primarily used internally and by the params package for extracting
+// parameter overrides.
+func (a *Args) Parsed() unsafe.Pointer {
+	return unsafe.Pointer(&a.parsed)
+}
+
+// GetParamOverrides safely extracts parameter overrides from ROS arguments.
+// This method performs the CGO call here (where Args is defined) to avoid
+// CGO pointer safety issues when passing pointers across package boundaries.
+// Returns an unsafe.Pointer to rcl_params_t that must be freed by the caller
+// using rcl_yaml_node_struct_fini.
+func (a *Args) GetParamOverrides() (unsafe.Pointer, error) {
+	var cparams *C.rcl_params_t
+	rc := C.rcl_arguments_get_param_overrides(&a.parsed, &cparams)
+	runtime.KeepAlive(a)
+	if rc != C.RCL_RET_OK {
+		return nil, errorsCastC(rc, "rcl_arguments_get_param_overrides")
+	}
+	return unsafe.Pointer(cparams), nil
 }
 
 func (a *Args) String() string {
@@ -393,12 +478,10 @@ func (n *Node) Spin(ctx context.Context) error {
 }
 
 type PublisherOptions struct {
-	Qos QosProfile
+	Qos qos.Profile
 }
 
-func NewDefaultPublisherOptions() *PublisherOptions {
-	return &PublisherOptions{Qos: NewDefaultQosProfile()}
-}
+func NewDefaultPublisherOptions() *PublisherOptions { return &PublisherOptions{Qos: qos.NewDefault()} }
 
 type Publisher struct {
 	rosID
@@ -432,7 +515,7 @@ func (n *Node) NewPublisher(
 	defer onErr(&err, pub.Close)
 	rcl_publisher_options_t := C.rcl_publisher_get_default_options()
 	rcl_publisher_options_t.allocator = *n.context.rcl_allocator_t
-	options.Qos.asCStruct(&rcl_publisher_options_t.qos)
+	qosToC(options.Qos, &rcl_publisher_options_t.qos)
 
 	var rc C.rcl_ret_t = C.rcl_publisher_init(
 		pub.rcl_publisher_t,
@@ -460,7 +543,6 @@ func (p *Publisher) Publish(ros2msg types.Message) error {
 	ptr := p.typeSupport.PrepareMemory()
 	defer p.typeSupport.ReleaseMemory(ptr)
 	p.typeSupport.AsCStruct(ptr, ros2msg)
-
 	rc = C.rcl_publish(p.rcl_publisher_t, ptr, nil)
 	if rc != C.RCL_RET_OK {
 		return errorsCastC(rc, fmt.Sprintf("rcl_publish() failed for publisher '%+v'", p))
@@ -659,11 +741,11 @@ func (t *Timer) Close() (err error) {
 }
 
 type SubscriptionOptions struct {
-	Qos QosProfile
+	Qos qos.Profile
 }
 
 func NewDefaultSubscriptionOptions() *SubscriptionOptions {
-	return &SubscriptionOptions{Qos: NewDefaultQosProfile()}
+	return &SubscriptionOptions{Qos: qos.NewDefault()}
 }
 
 type SubscriptionCallback func(*Subscription)
@@ -704,7 +786,7 @@ func (n *Node) NewSubscription(
 	defer onErr(&err, sub.Close)
 	rclOpts := C.rcl_subscription_get_default_options()
 	rclOpts.allocator = *n.context.rcl_allocator_t
-	options.Qos.asCStruct(&rclOpts.qos)
+	qosToC(options.Qos, &rclOpts.qos)
 
 	rc := C.rcl_subscription_init(
 		sub.rcl_subscription_t,
@@ -859,12 +941,10 @@ type ServiceInfo struct {
 }
 
 type ServiceOptions struct {
-	Qos QosProfile
+	Qos qos.Profile
 }
 
-func NewDefaultServiceOptions() *ServiceOptions {
-	return &ServiceOptions{Qos: NewDefaultServiceQosProfile()}
-}
+func NewDefaultServiceOptions() *ServiceOptions { return &ServiceOptions{Qos: qos.NewDefault()} }
 
 type ServiceResponseSender interface {
 	SendResponse(resp types.Message) error
@@ -913,7 +993,7 @@ func (n *Node) NewService(
 	*s.rclService = C.rcl_get_zero_initialized_service()
 	defer onErr(&err, s.Close)
 	opts := C.rcl_service_options_t{allocator: *n.context.rcl_allocator_t}
-	options.Qos.asCStruct(&opts.qos)
+	qosToC(options.Qos, &opts.qos)
 	retCode := C.rcl_service_init(
 		s.rclService,
 		n.rcl_node_t,
@@ -982,12 +1062,10 @@ func (s *Service) handleRequest() {
 }
 
 type ClientOptions struct {
-	Qos QosProfile
+	Qos qos.Profile
 }
 
-func NewDefaultClientOptions() *ClientOptions {
-	return &ClientOptions{Qos: NewDefaultServiceQosProfile()}
-}
+func NewDefaultClientOptions() *ClientOptions { return &ClientOptions{Qos: qos.NewDefault()} }
 
 // Client is used to send requests to and receive responses from a service.
 //
@@ -1025,7 +1103,7 @@ func (n *Node) NewClient(
 	*c.rclClient = C.rcl_get_zero_initialized_client()
 	defer onErr(&err, c.Close)
 	opts := C.rcl_client_options_t{allocator: *n.context.rcl_allocator_t}
-	options.Qos.asCStruct(&opts.qos)
+	qosToC(options.Qos, &opts.qos)
 	cserviceName := C.CString(serviceName)
 	defer C.free(unsafe.Pointer(cserviceName))
 	rc := C.rcl_client_init(
